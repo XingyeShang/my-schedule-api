@@ -1,0 +1,39 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 新增：定义“用户”模型
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique // 邮箱是唯一的，用来登录
+  password  String   // 存储加密后的密码
+
+  // 关系：一个用户可以拥有多个日程
+  events    Event[]
+}
+
+// 更新：“日程”模型
+model Event {
+  id          Int      @id @default(autoincrement())
+  title       String
+  description String?
+  startTime   DateTime
+  endTime     DateTime
+
+  // --- 新增的字段 ---
+  reminderTime   DateTime?
+  isReminderSent Boolean  @default(false)
+  // --- 新增结束 ---
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id])
+}
