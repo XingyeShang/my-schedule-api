@@ -14,6 +14,7 @@ const swaggerUi = require('swagger-ui-express');
 const { body, validationResult } = require('express-validator');
 const cron = require('node-cron'); // <-- 新增：引入任务调度库
 const cors = require('cors');
+const { addDays, addWeeks, addMonths, isWithinInterval } = require('date-fns');
 // ---------------------------------
 // 2. 初始化与核心配置 (Initialization & Config)
 // ---------------------------------
@@ -276,7 +277,7 @@ app.post('/events', authenticateToken, [
       return res.status(400).json({ errors: errors.array() });
     }
     
-    const { title, description, startTime, endTime, reminderTime } = req.body;
+    const { title, description, startTime, endTime, reminderTime,recurrence } = req.body;
     const userId = req.user.userId;
     
     const newEvent = await prisma.event.create({
@@ -287,19 +288,93 @@ app.post('/events', authenticateToken, [
         endTime,
         userId,
         reminderTime: reminderTime || null,
+        recurrence:recurrence,
       },
     });
     res.status(201).json(newEvent);
 });
 
+// 在文件顶部，引入 date-fns 库来帮助我们处理日期计算
+// 如果没有安装，请先在后端项目中运行: npm install date-fns
+// ... (您其他的 app.use 和 app.post 等路由)
+// 用下面的代码块，完整替换掉您旧的 app.get('/events', ...)
 app.get('/events', authenticateToken, async (req, res) => {
   const userId = req.user.userId;
-  const events = await prisma.event.findMany({
-    where: { userId: userId },
-    orderBy: { startTime: 'asc' },
-  });
-  res.json(events);
+
+  // 1. 获取前端请求的时间范围，如果没有则默认为本月
+  const { start, end } = req.query;
+  const startDate = start ? new Date(start) : new Date(new Date().setDate(1));
+  const endDate = end ? new Date(end) : new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
+
+  try {
+    // 2. 从数据库中获取该用户所有的“母版”日程
+    const baseEvents = await prisma.event.findMany({
+      where: { userId: userId },
+    });
+
+    const allEvents = [];
+
+    // 3. 遍历所有“母版”日程
+    baseEvents.forEach(event => {
+      // 如果是没有重复规则的普通日程
+      if (!event.recurrence) {
+        // 检查它是否在我们请求的时间范围内
+        if (isWithinInterval(event.startTime, { start: startDate, end: endDate })) {
+          allEvents.push(event);
+        }
+      } else {
+        // 如果是重复日程，则开始动态计算
+        let currentDate = event.startTime;
+        let currentEndDate = event.endTime;
+
+        // 循环生成，直到生成的日程开始时间超出了我们请求的范围
+        while (currentDate <= endDate) {
+          // 检查生成的这个实例是否落在我们请求的时间范围内
+          if (currentDate >= startDate) {
+            // 创建一个新的日程实例对象并添加到结果数组中
+            allEvents.push({
+              ...event,
+              // 关键：使用计算出的新日期，但保留原始的id以便追踪
+              // 我们添加一个唯一的 recurrentEventId 以便在前端区分
+              recurrentEventId: `${event.id}-${currentDate.toISOString()}`,
+              startTime: currentDate,
+              endTime: currentEndDate,
+            });
+          }
+
+          // 根据重复规则，计算下一个发生时间
+          switch (event.recurrence) {
+            case 'daily':
+              currentDate = addDays(currentDate, 1);
+              currentEndDate = addDays(currentEndDate, 1);
+              break;
+            case 'weekly':
+              currentDate = addWeeks(currentDate, 1);
+              currentEndDate = addWeeks(currentEndDate, 1);
+              break;
+            case 'monthly':
+              currentDate = addMonths(currentDate, 1);
+              currentEndDate = addMonths(currentEndDate, 1);
+              break;
+            default:
+              // 如果是不支持的规则，则只处理一次就跳出循环
+              currentDate = new Date(endDate.getTime() + 1); 
+              break;
+          }
+        }
+      }
+    });
+
+    // 按开始时间排序后返回给前端
+    allEvents.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+    res.json(allEvents);
+
+  } catch (error) {
+    console.error("获取日程失败:", error);
+    res.status(500).json({ error: "获取日程数据时发生错误。" });
+  }
 });
+
 
 app.put('/events/:id', authenticateToken, [
     body('title').optional().not().isEmpty().trim().escape(),
@@ -315,7 +390,15 @@ app.put('/events/:id', authenticateToken, [
 
     const userId = req.user.userId;
     const eventId = parseInt(req.params.id);
-    const dataToUpdate = req.body;
+    const { title, description, startTime, endTime, recurrence } = req.body;
+    const dataToUpdate = {
+        title,
+        description,
+        startTime: startTime ? new Date(startTime) : undefined,
+        endTime: endTime ? new Date(endTime) : undefined,
+        // 如果传入 'none'，则将数据库字段设为 null
+        recurrence: recurrence === 'none' ? null : recurrence,
+    };
     
     try {
         const event = await prisma.event.findFirst({
