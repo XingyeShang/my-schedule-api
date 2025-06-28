@@ -6,22 +6,23 @@
 // ---------------------------------
 // 1. 引入所有需要的库 (Dependencies)
 // ---------------------------------
+// my-schedule-api/index.js
+
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const swaggerUi = require('swagger-ui-express'); 
+const swaggerUi = require('swagger-ui-express');
 const { body, validationResult } = require('express-validator');
-const cron = require('node-cron'); // <-- 新增：引入任务调度库
 const cors = require('cors');
-const { addDays, addWeeks, addMonths, isWithinInterval } = require('date-fns');
-// ---------------------------------
-// 2. 初始化与核心配置 (Initialization & Config)
-// ---------------------------------
+const cron = require('node-cron');
+const { addDays, addWeeks, addMonths, isWithinInterval, subMinutes, subHours, subDays } = require('date-fns');
+const { sendReminderEmail } = require('./mailService.js'); // 1. 引入邮件服务
+
 const prisma = new PrismaClient();
 const app = express();
-const PORT = 3000;
-const JWT_SECRET = 'your-super-secret-and-long-key-that-no-one-can-guess';
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key';
 
 // ---------------------------------
 // 3. Swagger API 规范对象 (Swagger Spec Object)
@@ -33,7 +34,7 @@ const swaggerSpec = {
     version: '1.0.0',
     description: '一个使用 Express, Prisma 和 JWT 构建的功能丰富的日程管理后端服务。',
   },
-  servers: [{ url: `http://localhost:${PORT}` }],
+  servers: [{ url: `http://localhost:3000` }],
   components: {
     securitySchemes: {
       bearerAuth: {
@@ -51,7 +52,9 @@ const swaggerSpec = {
           description: { type: 'string', example: '讨论项目进展' },
           startTime: { type: 'string', format: 'date-time' },
           endTime: { type: 'string', format: 'date-time' },
-          reminderTime: { type: 'string', format: 'date-time' },
+          recurrence: { type: 'string', example: 'weekly' },
+          reminderValue: { type: 'integer', example: 10 },
+          reminderUnit: { type: 'string', example: 'minutes' },
           isReminderSent: { type: 'boolean' },
           createdAt: { type: 'string', format: 'date-time' },
           updatedAt: { type: 'string', format: 'date-time' },
@@ -224,279 +227,206 @@ const authenticateToken = (req, res, next) => {
 // ---------------------------------
 // 6. 认证 API 路由 (Auth Routes)
 // ---------------------------------
+// --- AUTH ROUTES ---
 app.post('/auth/register', [
-    body('email', '请输入有效的邮箱地址').isEmail().normalizeEmail(),
-    body('password', '密码长度不能小于6位').isLength({ min: 6 }),
-  ], async (req, res) => {
+    body('email').isEmail(),
+    body('password').isLength({ min: 6 })
+], async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+        return res.status(400).json({ errors: errors.array() });
     }
-
     const { email, password } = req.body;
     try {
-      const hashedPassword = bcrypt.hashSync(password, 8);
-      const user = await prisma.user.create({
-        data: { email, password: hashedPassword },
-      });
-      const { password: _, ...userWithoutPassword } = user;
-      res.status(201).json({ message: '用户创建成功', user: userWithoutPassword });
+        const hashedPassword = bcrypt.hashSync(password, 8);
+        const user = await prisma.user.create({ data: { email, password: hashedPassword } });
+        const { password: _, ...userWithoutPassword } = user;
+        res.status(201).json({ message: '用户创建成功', user: userWithoutPassword });
     } catch (error) {
-      if (error.code === 'P2002') {
-        return res.status(400).json({ error: '该邮箱已被注册' });
-      }
-      res.status(500).json({ error: '注册失败' });
+        if (error.code === 'P2002') {
+            return res.status(400).json({ error: '该邮箱已被注册' });
+        }
+        res.status(500).json({ error: '注册失败' });
     }
 });
 
 app.post('/auth/login', async (req, res) => {
-  const { email, password } = req.body;
-  const user = await prisma.user.findUnique({ where: { email } });
-  if (!user || !bcrypt.compareSync(password, user.password)) {
-    return res.status(401).json({ error: '邮箱或密码错误' });
-  }
-  const token = jwt.sign(
-    { userId: user.id, email: user.email },
-    JWT_SECRET,
-    { expiresIn: '24h' }
-  );
-  res.json({ message: '登录成功', token });
-});
-
-// ---------------------------------
-// 7. 日程 API 路由 (Event Routes)
-// ---------------------------------
-app.post('/events', authenticateToken, [
-    body('title', '标题不能为空').not().isEmpty().trim().escape(),
-    body('startTime', '必须是有效的日期格式').isISO8601().toDate(),
-    body('endTime', '必须是有效的日期格式').isISO8601().toDate(),
-    body('reminderTime').optional().isISO8601().toDate(),
-  ], async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+    const { email, password } = req.body;
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user || !bcrypt.compareSync(password, user.password)) {
+        return res.status(401).json({ error: '邮箱或密码错误' });
     }
-    
-    const { title, description, startTime, endTime, reminderTime,recurrence } = req.body;
-    const userId = req.user.userId;
-    
-    const newEvent = await prisma.event.create({
-      data: {
-        title,
-        description,
-        startTime,
-        endTime,
-        userId,
-        reminderTime: reminderTime || null,
-        recurrence:recurrence,
-      },
-    });
-    res.status(201).json(newEvent);
+    const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
+    res.json({ message: '登录成功', token });
 });
 
-// 在文件顶部，引入 date-fns 库来帮助我们处理日期计算
-// 如果没有安装，请先在后端项目中运行: npm install date-fns
-// ... (您其他的 app.use 和 app.post 等路由)
-// 用下面的代码块，完整替换掉您旧的 app.get('/events', ...)
+
+// --- EVENT ROUTES ---
 app.get('/events', authenticateToken, async (req, res) => {
-  const userId = req.user.userId;
+    const userId = req.user.userId;
+    const { start, end } = req.query;
+    const startDate = start ? new Date(start) : new Date(new Date().setDate(1));
+    const endDate = end ? new Date(end) : new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
 
-  // 1. 获取前端请求的时间范围，如果没有则默认为本月
-  const { start, end } = req.query;
-  const startDate = start ? new Date(start) : new Date(new Date().setDate(1));
-  const endDate = end ? new Date(end) : new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
-
-  try {
-    // 2. 从数据库中获取该用户所有的“母版”日程
-    const baseEvents = await prisma.event.findMany({
-      where: { userId: userId },
-    });
-
-    const allEvents = [];
-
-    // 3. 遍历所有“母版”日程
-    baseEvents.forEach(event => {
-      // 如果是没有重复规则的普通日程
-      if (!event.recurrence) {
-        // 检查它是否在我们请求的时间范围内
-        if (isWithinInterval(event.startTime, { start: startDate, end: endDate })) {
-          allEvents.push(event);
-        }
-      } else {
-        // 如果是重复日程，则开始动态计算
-        let currentDate = event.startTime;
-        let currentEndDate = event.endTime;
-
-        // 循环生成，直到生成的日程开始时间超出了我们请求的范围
-        while (currentDate <= endDate) {
-          // 检查生成的这个实例是否落在我们请求的时间范围内
-          if (currentDate >= startDate) {
-            // 创建一个新的日程实例对象并添加到结果数组中
-            allEvents.push({
-              ...event,
-              // 关键：使用计算出的新日期，但保留原始的id以便追踪
-              // 我们添加一个唯一的 recurrentEventId 以便在前端区分
-              recurrentEventId: `${event.id}-${currentDate.toISOString()}`,
-              startTime: currentDate,
-              endTime: currentEndDate,
-            });
-          }
-
-          // 根据重复规则，计算下一个发生时间
-          switch (event.recurrence) {
-            case 'daily':
-              currentDate = addDays(currentDate, 1);
-              currentEndDate = addDays(currentEndDate, 1);
-              break;
-            case 'weekly':
-              currentDate = addWeeks(currentDate, 1);
-              currentEndDate = addWeeks(currentEndDate, 1);
-              break;
-            case 'monthly':
-              currentDate = addMonths(currentDate, 1);
-              currentEndDate = addMonths(currentEndDate, 1);
-              break;
-            default:
-              // 如果是不支持的规则，则只处理一次就跳出循环
-              currentDate = new Date(endDate.getTime() + 1); 
-              break;
-          }
-        }
-      }
-    });
-
-    // 按开始时间排序后返回给前端
-    allEvents.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
-    res.json(allEvents);
-
-  } catch (error) {
-    console.error("获取日程失败:", error);
-    res.status(500).json({ error: "获取日程数据时发生错误。" });
-  }
+    try {
+        const baseEvents = await prisma.event.findMany({ where: { userId } });
+        const allEvents = [];
+        baseEvents.forEach(event => {
+            if (!event.recurrence) {
+                if (isWithinInterval(event.startTime, { start: startDate, end: endDate })) {
+                    allEvents.push(event);
+                }
+            } else {
+                let currentDate = event.startTime;
+                let currentEndDate = event.endTime;
+                while (currentDate <= endDate) {
+                    if (currentDate >= startDate) {
+                        allEvents.push({
+                            ...event,
+                            recurrentEventId: `${event.id}-${currentDate.toISOString()}`,
+                            startTime: currentDate,
+                            endTime: currentEndDate,
+                        });
+                    }
+                    switch (event.recurrence) {
+                        case 'daily': currentDate = addDays(currentDate, 1); currentEndDate = addDays(currentEndDate, 1); break;
+                        case 'weekly': currentDate = addWeeks(currentDate, 1); currentEndDate = addWeeks(currentEndDate, 1); break;
+                        case 'monthly': currentDate = addMonths(currentDate, 1); currentEndDate = addMonths(currentEndDate, 1); break;
+                        default: currentDate = new Date(endDate.getTime() + 1); break;
+                    }
+                }
+            }
+        });
+        allEvents.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+        res.json(allEvents);
+    } catch (error) {
+        res.status(500).json({ error: "获取日程失败" });
+    }
 });
 
-
-app.put('/events/:id', authenticateToken, [
-    body('title').optional().not().isEmpty().trim().escape(),
-    body('description').optional().trim().escape(),
-    body('startTime').optional().isISO8601().toDate(),
-    body('endTime').optional().isISO8601().toDate(),
-    body('reminderTime').optional({ nullable: true }).isISO8601().toDate(),
-  ], async (req, res) => {
+app.post('/events', authenticateToken, [
+    body('title').notEmpty(),
+    body('startTime').isISO8601(),
+    body('endTime').isISO8601(),
+], async (req, res) => {
     const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    const userId = req.user.userId;
-    const eventId = parseInt(req.params.id);
-    const { title, description, startTime, endTime, recurrence } = req.body;
-    const dataToUpdate = {
-        title,
-        description,
-        startTime: startTime ? new Date(startTime) : undefined,
-        endTime: endTime ? new Date(endTime) : undefined,
-        // 如果传入 'none'，则将数据库字段设为 null
-        recurrence: recurrence === 'none' ? null : recurrence,
-    };
-    
+    const { title, description, startTime, endTime, recurrence, reminderValue, reminderUnit } = req.body;
     try {
-        const event = await prisma.event.findFirst({
-            where: { id: eventId, userId: userId }
+        const newEvent = await prisma.event.create({
+            data: {
+                title, description,
+                startTime: new Date(startTime),
+                endTime: new Date(endTime),
+                recurrence: recurrence === 'none' ? null : recurrence,
+                reminderValue: reminderUnit !== 'none' && reminderValue > 0 ? parseInt(reminderValue, 10) : null,
+                reminderUnit: reminderUnit !== 'none' && reminderValue > 0 ? reminderUnit : null,
+                userId: req.user.userId,
+            },
         });
-        if (!event) {
-            return res.status(404).json({ error: '日程未找到或您没有权限' });
-        }
+        res.status(201).json(newEvent);
+    } catch (error) {
+        res.status(500).json({ error: '创建日程失败' });
+    }
+});
+
+app.put('/events/:id', authenticateToken, async (req, res) => {
+    const eventId = parseInt(req.params.id);
+    const { title, description, startTime, endTime, recurrence, reminderValue, reminderUnit } = req.body;
+    try {
+        const event = await prisma.event.findFirst({ where: { id: eventId, userId: req.user.userId } });
+        if (!event) return res.status(404).json({ error: '日程未找到或无权限' });
+        
         const updatedEvent = await prisma.event.update({
             where: { id: eventId },
-            data: dataToUpdate,
+            data: {
+                title, description,
+                startTime: startTime ? new Date(startTime) : undefined,
+                endTime: endTime ? new Date(endTime) : undefined,
+                recurrence: recurrence === 'none' ? null : recurrence,
+                reminderValue: reminderUnit !== 'none' && reminderValue > 0 ? parseInt(reminderValue, 10) : null,
+                reminderUnit: reminderUnit !== 'none' && reminderValue > 0 ? reminderUnit : null,
+            },
         });
         res.json(updatedEvent);
-    } catch(error) {
-        console.error("Update event error:", error);
-        res.status(500).json({ error: '更新失败' });
+    } catch (error) {
+        res.status(500).json({ error: '更新日程失败' });
     }
 });
 
 app.delete('/events/:id', authenticateToken, async (req, res) => {
-    const userId = req.user.userId;
     const eventId = parseInt(req.params.id);
     try {
-        const event = await prisma.event.findFirst({
-            where: { id: eventId, userId: userId }
-        });
-        if (!event) {
-            return res.status(404).json({ error: '日程未找到或您没有权限' });
-        }
-        await prisma.event.delete({
-            where: { id: eventId },
-        });
+        const event = await prisma.event.findFirst({ where: { id: eventId, userId: req.user.userId } });
+        if (!event) return res.status(404).json({ error: '日程未找到或无权限' });
+        await prisma.event.delete({ where: { id: eventId } });
         res.status(204).send();
-    } catch(error) {
-        res.status(500).json({ error: '删除失败' });
+    } catch (error) {
+        res.status(500).json({ error: '删除日程失败' });
     }
 });
 
-// ---------------------------------
-// 8. 后台定时任务 (Cron Job)
-// ---------------------------------
-console.log('⏰ 定时提醒任务已设置，每分钟将进行一次检查...');
-
+// --- CRON JOB ---
 cron.schedule('* * * * *', async () => {
-  const checkTime = new Date();
-  console.log(`\n[${checkTime.toLocaleTimeString()}] Running a check for reminders...`);
-  
+  const now = new Date();
+  console.log(`\n[${now.toLocaleTimeString()}] Running a check for reminders...`);
+
   try {
     const eventsToRemind = await prisma.event.findMany({
       where: {
         isReminderSent: false,
-        reminderTime: {
-          not: null,
-          lte: checkTime,
-        },
+        reminderValue: { not: null },
+        reminderUnit: { not: null },
       },
-      include: { user: true }
+      include: { user: true },
     });
 
     if (eventsToRemind.length === 0) {
-      console.log('No reminders to send at this time.');
       return;
     }
 
-    console.log(`[+] Found ${eventsToRemind.length} event(s) to send reminders for.`);
-
+    const eventsToSend = [];
     for (const event of eventsToRemind) {
-      console.log(`
-        ==================================================
-        🚀 SENDING REMINDER!
-        --------------------------------------------------
-        TO:         ${event.user.email}
-        EVENT:      "${event.title}"
-        START TIME: ${event.startTime.toLocaleString()}
-        REMINDER:   ${event.reminderTime.toLocaleString()}
-        ==================================================
-      `);
+      let reminderTime;
+      const value = event.reminderValue;
+      switch (event.reminderUnit) {
+        case 'minutes': reminderTime = subMinutes(event.startTime, value); break;
+        case 'hours': reminderTime = subHours(event.startTime, value); break;
+        case 'days': reminderTime = subDays(event.startTime, value); break;
+        default: continue;
+      }
+      if (now >= reminderTime) {
+        eventsToSend.push(event);
+      }
     }
 
-    const idsToUpdate = eventsToRemind.map(event => event.id);
-    await prisma.event.updateMany({
-      where: {
-        id: { in: idsToUpdate },
-      },
-      data: {
-        isReminderSent: true,
-      },
-    });
-    console.log(`[✔] Successfully marked ${idsToUpdate.length} event(s) as sent.`);
-    
+    if (eventsToSend.length > 0) {
+      console.log(`[+] Found ${eventsToSend.length} event(s) to send reminders for.`);
+      
+      // 2. 【关键改动】遍历并调用邮件发送函数
+      for (const event of eventsToSend) {
+        console.log(`准备为日程: "${event.title}" 发送邮件给 ${event.user.email}`);
+        try {
+          await sendReminderEmail(event.user.email, event);
+        } catch (mailError) {
+          console.error(`为日程ID ${event.id} 发送邮件失败:`, mailError);
+        }
+      }
+
+      const idsToUpdate = eventsToSend.map(e => e.id);
+      await prisma.event.updateMany({
+        where: { id: { in: idsToUpdate } },
+        data: { isReminderSent: true },
+      });
+      console.log(`[✔] 已成功将会 ${idsToUpdate.length} 个日程标记为已发送。`);
+    }
   } catch (error) {
-    console.error('Error during reminder check task:', error);
+    console.error('检查提醒任务时出错:', error);
   }
 });
 
-// ---------------------------------
-// 9. 启动服务器 (Start Server)
-// ---------------------------------
+
 app.listen(PORT, () => {
-  console.log(`🎉 阶段四服务器已就绪，API文档请访问 http://localhost:${PORT}/api-docs`);
+  console.log(`🎉 Backend server is running on http://localhost:${PORT}`);
 });

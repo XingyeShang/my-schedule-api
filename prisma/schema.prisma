@@ -27,8 +27,10 @@ model Event {
   startTime   DateTime
   endTime     DateTime
 
+  reminderValue  Int?     // 例如: 10, 30
+  reminderUnit   String?  // 例如: "days", "hours", "minutes"
+
   // --- 新增的字段 ---
-  reminderTime   DateTime?
   isReminderSent Boolean  @default(false)
   // --- 新增结束 ---
   recurrence     String?  
