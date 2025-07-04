@@ -9,34 +9,40 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// 新增：定义“用户”模型
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique // 邮箱是唯一的，用来登录
-  password  String   // 存储加密后的密码
-
-  // 关系：一个用户可以拥有多个日程
-  events    Event[]
+  id         Int        @id @default(autoincrement())
+  email      String     @unique
+  password   String
+  events     Event[]
+  categories Category[]
 }
 
-// 更新：“日程”模型
 model Event {
-  id          Int      @id @default(autoincrement())
-  title       String
-  description String?
-  startTime   DateTime
-  endTime     DateTime
+  id             Int       @id @default(autoincrement())
+  title          String
+  description    String?
+  startTime      DateTime
+  endTime        DateTime
+  isReminderSent Boolean   @default(false)
+  recurrence     String?
+  reminderValue  Int?
+  reminderUnit   String?
+  categoryId     Int?
+  // 【关键改动】增加 onDelete 策略，让数据库自动处理关联
+  category       Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  userId         Int
+  user           User      @relation(fields: [userId], references: [id])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
 
-  reminderValue  Int?     // 例如: 10, 30
-  reminderUnit   String?  // 例如: "days", "hours", "minutes"
+model Category {
+  id     Int     @id @default(autoincrement())
+  name   String
+  color  String
+  events Event[]
+  userId Int
+  user   User    @relation(fields: [userId], references: [id])
 
-  // --- 新增的字段 ---
-  isReminderSent Boolean  @default(false)
-  // --- 新增结束 ---
-  recurrence     String?  
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  userId      Int
-  user        User     @relation(fields: [userId], references: [id])
+  @@unique([userId, name])
 }

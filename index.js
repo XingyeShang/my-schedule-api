@@ -260,6 +260,105 @@ app.post('/auth/login', async (req, res) => {
     res.json({ message: '登录成功', token });
 });
 
+// --- 【新增】CATEGORY ROUTES ---
+// --- CATEGORY ROUTES ---
+app.get('/categories', authenticateToken, async (req, res) => {
+  const userId = req.user.userId;
+  try {
+    const categories = await prisma.category.findMany({
+      where: { userId: userId },
+      orderBy: { name: 'asc' }
+    });
+    res.json(categories);
+  } catch (error) {
+    res.status(500).json({ error: '获取分类失败' });
+  }
+});
+
+app.post('/categories', authenticateToken, [
+  body('name').notEmpty().withMessage('分类名称不能为空'),
+  body('color').isHexColor().withMessage('必须提供有效的十六进制颜色值'),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  const { name, color } = req.body;
+  const userId = req.user.userId;
+
+  try {
+    const newCategory = await prisma.category.create({
+      data: { name, color, userId },
+    });
+    res.status(201).json(newCategory);
+  } catch (error) {
+    if (error.code === 'P2002') {
+      return res.status(400).json({ error: '该分类名称已存在' });
+    }
+    res.status(500).json({ error: '创建分类失败' });
+  }
+});
+
+app.put('/categories/:id', authenticateToken, [
+  body('name').notEmpty().withMessage('分类名称不能为空'),
+  body('color').isHexColor().withMessage('必须提供有效的十六进制颜色值'),
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  const categoryId = parseInt(req.params.id);
+  const { name, color } = req.body;
+  const userId = req.user.userId;
+
+  try {
+    const category = await prisma.category.findFirst({
+      where: { id: categoryId, userId: userId }
+    });
+    if (!category) {
+      return res.status(404).json({ error: '分类未找到或无权限' });
+    }
+
+    const updatedCategory = await prisma.category.update({
+      where: { id: categoryId },
+      data: { name, color },
+    });
+    res.json(updatedCategory);
+  } catch (error) {
+    if (error.code === 'P2002') {
+      return res.status(400).json({ error: '该分类名称已存在' });
+    }
+    res.status(500).json({ error: '更新分类失败' });
+  }
+});
+
+// 【关键修复】新增删除分类的路由
+app.delete('/categories/:id', authenticateToken, async (req, res) => {
+  const categoryId = parseInt(req.params.id);
+  const userId = req.user.userId;
+
+  try {
+    // 确保用户只能删除自己的分类
+    const category = await prisma.category.findFirst({
+      where: { id: categoryId, userId: userId }
+    });
+    if (!category) {
+      return res.status(404).json({ error: '分类未找到或无权限' });
+    }
+
+    // 直接删除分类，Prisma会根据schema中的onDelete: SetNull自动处理关联的Event
+    await prisma.category.delete({
+      where: { id: categoryId },
+    });
+
+    res.status(204).send(); // 删除成功，无内容返回
+  } catch (error) {
+    console.error("删除分类时出错:", error);
+    res.status(500).json({ error: '删除分类失败' });
+  }
+});
 
 // --- EVENT ROUTES ---
 app.get('/events', authenticateToken, async (req, res) => {
@@ -312,7 +411,7 @@ app.post('/events', authenticateToken, [
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    const { title, description, startTime, endTime, recurrence, reminderValue, reminderUnit } = req.body;
+    const { title, description, startTime, endTime, recurrence, reminderValue, reminderUnit, categoryId } = req.body;
     try {
         const newEvent = await prisma.event.create({
             data: {
@@ -322,6 +421,8 @@ app.post('/events', authenticateToken, [
                 recurrence: recurrence === 'none' ? null : recurrence,
                 reminderValue: reminderUnit !== 'none' && reminderValue > 0 ? parseInt(reminderValue, 10) : null,
                 reminderUnit: reminderUnit !== 'none' && reminderValue > 0 ? reminderUnit : null,
+                // 【关键改动】将 categoryId 添加到要创建的数据中
+                categoryId: categoryId ? parseInt(categoryId, 10) : null,
                 userId: req.user.userId,
             },
         });
@@ -333,7 +434,7 @@ app.post('/events', authenticateToken, [
 
 app.put('/events/:id', authenticateToken, async (req, res) => {
     const eventId = parseInt(req.params.id);
-    const { title, description, startTime, endTime, recurrence, reminderValue, reminderUnit } = req.body;
+    const { title, description, startTime, endTime, recurrence, reminderValue, reminderUnit, categoryId } = req.body;
     try {
         const event = await prisma.event.findFirst({ where: { id: eventId, userId: req.user.userId } });
         if (!event) return res.status(404).json({ error: '日程未找到或无权限' });
@@ -347,6 +448,8 @@ app.put('/events/:id', authenticateToken, async (req, res) => {
                 recurrence: recurrence === 'none' ? null : recurrence,
                 reminderValue: reminderUnit !== 'none' && reminderValue > 0 ? parseInt(reminderValue, 10) : null,
                 reminderUnit: reminderUnit !== 'none' && reminderValue > 0 ? reminderUnit : null,
+                // 【关键改动】将 categoryId 添加到要更新的数据中
+                categoryId: categoryId ? parseInt(categoryId, 10) : null,
             },
         });
         res.json(updatedEvent);
