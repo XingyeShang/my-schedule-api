@@ -361,47 +361,77 @@ app.delete('/categories/:id', authenticateToken, async (req, res) => {
 });
 
 // --- EVENT ROUTES ---
-app.get('/events', authenticateToken, async (req, res) => {
-    const userId = req.user.userId;
-    const { start, end } = req.query;
-    const startDate = start ? new Date(start) : new Date(new Date().setDate(1));
-    const endDate = end ? new Date(end) : new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
+// index.js (后端)
 
-    try {
-        const baseEvents = await prisma.event.findMany({ where: { userId } });
-        const allEvents = [];
-        baseEvents.forEach(event => {
-            if (!event.recurrence) {
-                if (isWithinInterval(event.startTime, { start: startDate, end: endDate })) {
-                    allEvents.push(event);
-                }
-            } else {
-                let currentDate = event.startTime;
-                let currentEndDate = event.endTime;
-                while (currentDate <= endDate) {
-                    if (currentDate >= startDate) {
-                        allEvents.push({
-                            ...event,
-                            recurrentEventId: `${event.id}-${currentDate.toISOString()}`,
-                            startTime: currentDate,
-                            endTime: currentEndDate,
-                        });
-                    }
-                    switch (event.recurrence) {
-                        case 'daily': currentDate = addDays(currentDate, 1); currentEndDate = addDays(currentEndDate, 1); break;
-                        case 'weekly': currentDate = addWeeks(currentDate, 1); currentEndDate = addWeeks(currentEndDate, 1); break;
-                        case 'monthly': currentDate = addMonths(currentDate, 1); currentEndDate = addMonths(currentEndDate, 1); break;
-                        default: currentDate = new Date(endDate.getTime() + 1); break;
-                    }
-                }
+app.get('/events', authenticateToken, async (req, res) => {
+  const userId = req.user.userId;
+  const { start, end, categoryId, search } = req.query;
+
+  try {
+    // 构造一个动态的查询条件
+    const whereClause = {
+      userId: userId,
+      ...(categoryId && { categoryId: parseInt(categoryId, 10) }),
+      ...(search && {
+        OR: [
+          { title: { contains: search, mode: 'insensitive' } },
+          { description: { contains: search, mode: 'insensitive' } },
+        ],
+      }),
+    };
+
+    // 判断前端是否请求了日历视图的日期范围
+    if (start && end) {
+      const startDate = new Date(start);
+      const endDate = new Date(end);
+      const baseEvents = await prisma.event.findMany({ where: whereClause });
+      
+      const allEvents = [];
+      baseEvents.forEach(event => {
+        if (!event.recurrence) {
+          if (event.startTime < endDate && event.endTime > startDate) {
+              allEvents.push(event);
+          }
+        } else {
+          let currentDate = event.startTime;
+          const duration = event.endTime.getTime() - currentDate.getTime();
+          while (currentDate <= endDate) {
+            if (currentDate >= startDate) {
+              allEvents.push({
+                ...event,
+                recurrentEventId: `${event.id}-${currentDate.toISOString()}`,
+                startTime: currentDate,
+                endTime: new Date(currentDate.getTime() + duration),
+              });
             }
-        });
-        allEvents.sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
-        res.json(allEvents);
-    } catch (error) {
-        res.status(500).json({ error: "获取日程失败" });
+            switch (event.recurrence) {
+              case 'daily': currentDate = addDays(currentDate, 1); break;
+              case 'weekly': currentDate = addWeeks(currentDate, 1); break;
+              case 'monthly': currentDate = addMonths(currentDate, 1); break;
+              default: currentDate = new Date(endDate.getTime() + 1); break;
+            }
+          }
+        }
+      });
+      res.json(allEvents);
+
+    } else {
+      // 如果没有日期范围，则直接返回所有“母版”日程 (用于“所有日程”列表页)
+      const allBaseEvents = await prisma.event.findMany({
+        where: whereClause,
+        orderBy: {
+          startTime: 'desc'
+        }
+      });
+      res.json(allBaseEvents);
     }
+  } catch (error) {
+    console.error("获取日程失败:", error);
+    res.status(500).json({ error: "获取日程数据时发生错误。" });
+  }
 });
+
+
 
 app.post('/events', authenticateToken, [
     body('title').notEmpty(),
