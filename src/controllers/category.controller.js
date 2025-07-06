@@ -1,7 +1,6 @@
 // src/controllers/category.controller.js
-const { PrismaClient } = require('@prisma/client');
 const { validationResult } = require('express-validator');
-const prisma = new PrismaClient();
+const prisma = require('../lib/prisma');
 
 exports.getAllCategories = async (req, res) => {
   const userId = req.user.userId;

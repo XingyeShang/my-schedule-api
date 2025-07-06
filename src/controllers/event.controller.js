@@ -1,8 +1,7 @@
 // src/controllers/event.controller.js
-const { PrismaClient } = require('@prisma/client');
 const { validationResult } = require('express-validator');
 const { addDays, addWeeks, addMonths, isWithinInterval } = require('date-fns');
-const prisma = new PrismaClient();
+const prisma = require('../lib/prisma');
 
 exports.getAllEvents = async (req, res) => {
     const userId = req.user.userId;

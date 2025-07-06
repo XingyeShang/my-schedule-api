@@ -1,10 +1,9 @@
 // src/controllers/auth.controller.js
-const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { validationResult } = require('express-validator');
+const prisma = require('../lib/prisma');
 
-const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key';
 
 exports.register = async (req, res) => {
