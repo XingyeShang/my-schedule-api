@@ -1,0 +1,48 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         Int        @id @default(autoincrement())
+  email      String     @unique
+  password   String
+  events     Event[]
+  categories Category[]
+}
+
+model Event {
+  id             Int       @id @default(autoincrement())
+  title          String
+  description    String?
+  startTime      DateTime
+  endTime        DateTime
+  isReminderSent Boolean   @default(false)
+  recurrence     String?
+  reminderValue  Int?
+  reminderUnit   String?
+  categoryId     Int?
+  // 【关键改动】增加 onDelete 策略，让数据库自动处理关联
+  category       Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  userId         Int
+  user           User      @relation(fields: [userId], references: [id])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model Category {
+  id     Int     @id @default(autoincrement())
+  name   String
+  color  String
+  events Event[]
+  userId Int
+  user   User    @relation(fields: [userId], references: [id])
+
+  @@unique([userId, name])
+}
