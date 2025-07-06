@@ -8,6 +8,8 @@
 // ---------------------------------
 // my-schedule-api/index.js
 
+// my-schedule-api/index.js
+
 const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
@@ -16,14 +18,15 @@ const swaggerUi = require('swagger-ui-express');
 const { body, validationResult } = require('express-validator');
 const cors = require('cors');
 const cron = require('node-cron');
+const helmet = require('helmet'); // 1. 引入 helmet
+const rateLimit = require('express-rate-limit'); // 2. 引入 express-rate-limit
 const { addDays, addWeeks, addMonths, isWithinInterval, subMinutes, subHours, subDays } = require('date-fns');
-const { sendReminderEmail } = require('./mailService.js'); // 1. 引入邮件服务
+const { sendReminderEmail } = require('./mailService.js');
 
 const prisma = new PrismaClient();
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key';
-
 // ---------------------------------
 // 3. Swagger API 规范对象 (Swagger Spec Object)
 // ---------------------------------
@@ -206,7 +209,18 @@ const swaggerSpec = {
 // 4. 全局中间件 (Global Middleware)
 // ---------------------------------
 app.use(express.json());
+app.use(helmet()); // 3. 启用 helmet，它应该在所有路由之前
 app.use(cors()); // 允许所有来源的跨域请求
+
+
+const authLimiter = rateLimit({
+	windowMs: 15 * 60 * 1000, // 15 分钟的窗口期
+	max: 100, // 在窗口期内，每个IP最多允许100次请求
+	standardHeaders: true, // 返回速率限制信息到 `RateLimit-*` 响应头
+	legacyHeaders: false, // 禁用旧的 `X-RateLimit-*` 响应头
+    message: { error: '请求过于频繁，请在15分钟后重试！' },
+});
+
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec)); 
 
 // ---------------------------------
@@ -228,7 +242,7 @@ const authenticateToken = (req, res, next) => {
 // 6. 认证 API 路由 (Auth Routes)
 // ---------------------------------
 // --- AUTH ROUTES ---
-app.post('/auth/register', [
+app.post('/auth/register', authLimiter, [
     body('email').isEmail(),
     body('password').isLength({ min: 6 })
 ], async (req, res) => {
@@ -250,7 +264,7 @@ app.post('/auth/register', [
     }
 });
 
-app.post('/auth/login', async (req, res) => {
+app.post('/auth/login', authLimiter, async (req, res) => {
     const { email, password } = req.body;
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user || !bcrypt.compareSync(password, user.password)) {
@@ -259,7 +273,6 @@ app.post('/auth/login', async (req, res) => {
     const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
     res.json({ message: '登录成功', token });
 });
-
 // --- 【新增】CATEGORY ROUTES ---
 // --- CATEGORY ROUTES ---
 app.get('/categories', authenticateToken, async (req, res) => {
